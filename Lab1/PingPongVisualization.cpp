@@ -1,150 +1,180 @@
-// ! doing non blocking send and recieve, but not working as I though it would
-
 #include <mpi.h>
-#include <GL/glut.h>
+#include <GLFW/glfw3.h>
 #include <iostream>
-#include <cmath>
+#include <string>
+#include <sstream>
+#include <cstring>  // For strlen
+#include <unistd.h> // For usleep
 
-float ballX = -0.5f;
-float ballY = 0.0f;
-int currentCount = 0;
-bool isMovingRight = true;
-float animationSpeed = 0.02f;
-const float PROCESS_RADIUS = 0.15f;
+#define STB_EASY_FONT_IMPLEMENTATION
+#include "stb_easy_font.h"
 
-int myRank, worldSize;
-const int PING_PONG_LIMIT = 10;
-const int TAG = 0;
-bool isMyTurn = false;
+const int WIDTH = 800, HEIGHT = 600;
 
-// Add message state tracking
-bool messageSent = false;
-bool messageReceived = false;
-MPI_Request request = MPI_REQUEST_NULL;
-MPI_Status status;
+void drawProcessInfo(int rank, int count, int value, int partner) {
+    // Set up orthographic projection
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, WIDTH/2, HEIGHT/2, 0, -1, 1);  // Double the size
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
 
-void drawCircle(float cx, float cy, float radius, bool highlighted) {
-    const int segments = 100;
-    if (highlighted) {
-        glColor3f(1.0f, 0.0f, 0.0f);
+    // Background color based on role
+    if (rank == count % 2) {
+        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);  // Sending
     } else {
-        glColor3f(0.0f, 0.0f, 1.0f);
+        glClearColor(0.3f, 0.2f, 0.2f, 1.0f);  // Receiving
     }
-
-    glBegin(GL_TRIANGLE_FAN);
-    glVertex2f(cx, cy);
-    for (int i = 0; i <= segments; i++) {
-        float theta = 2.0f * 3.1415926f * float(i) / float(segments);
-        float x = radius * cosf(theta);
-        float y = radius * sinf(theta);
-        glVertex2f(cx + x, cy + y);
-    }
-    glEnd();
-}
-
-void display() {
     glClear(GL_COLOR_BUFFER_BIT);
+
+    // Enable blending for text
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // Prepare text
+    std::stringstream ss;
+    ss << "Process: " << rank << "\n"
+       << "Current Count: " << count << "\n"
+       << "Current Value: " << value << "\n"
+       << "Partner: " << partner;
     
-    drawCircle(-0.5f, 0.0f, PROCESS_RADIUS, myRank == 0 && isMyTurn);
-    drawCircle(0.5f, 0.0f, PROCESS_RADIUS, myRank == 1 && isMyTurn);
+    // Draw text using stb_easy_font
+    const char* text = ss.str().c_str();
+    float x = 20.0f, y = 30.0f;
     
-    glColor3f(0.0f, 1.0f, 0.0f);
-    drawCircle(ballX, ballY, 0.05f, true);
+    // Create vertex buffer with explicit white color
+    static unsigned char buffer[1024 * 1024];
+    unsigned char white[] = {255, 255, 255, 255};
+    int num_quads = stb_easy_font_print(x, y, (char*)text, white, buffer, sizeof(buffer));
     
-    glColor3f(1.0f, 1.0f, 1.0f);
-    glRasterPos2f(-0.55f, -0.3f);
-    std::string label0 = "Process 0";
-    for (char c : label0) {
-        glutBitmapCharacter(GLUT_BITMAP_9_BY_15, c);
+    // Draw the text quads
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(2, GL_FLOAT, 16, buffer);
+    glDrawArrays(GL_QUADS, 0, 4 * num_quads);
+    glDisableClientState(GL_VERTEX_ARRAY);
+
+    // Draw communication arrow
+    glColor3f(1.0f, 1.0f, 0.0f);
+    if (rank == count % 2) {
+        glBegin(GL_TRIANGLES);
+        glVertex2f(600, 150);
+        glVertex2f(700, 150);
+        glVertex2f(650, 200);
+        glEnd();
+    } else {
+        glBegin(GL_TRIANGLES);
+        glVertex2f(200, 150);
+        glVertex2f(100, 150);
+        glVertex2f(150, 200);
+        glEnd();
     }
-    
-    glRasterPos2f(0.45f, -0.3f);
-    std::string label1 = "Process 1";
-    for (char c : label1) {
-        glutBitmapCharacter(GLUT_BITMAP_9_BY_15, c);
-    }
-    
-    glutSwapBuffers();
+
+    glDisable(GL_BLEND);
 }
 
-void update(int value) {
-    if (currentCount < PING_PONG_LIMIT) {
-        // Check if it's this process's turn to send
-        if (myRank == currentCount % 2 && !messageSent) {
-            int sendValue = currentCount;
-            MPI_Isend(&sendValue, 1, MPI_INT, (myRank + 1) % 2, TAG, MPI_COMM_WORLD, &request);
-            std::cout << "Process " << myRank << " sent value " << sendValue << std::endl;
-            messageSent = true;
-            isMyTurn = false;
-        }
-        // Check if this process should receive
-        else if (myRank != currentCount % 2 && !messageReceived) {
-            int flag = 0;
-            MPI_Iprobe((myRank + 1) % 2, TAG, MPI_COMM_WORLD, &flag, &status);
-            if (flag) {
-                int recvValue;
-                MPI_Recv(&recvValue, 1, MPI_INT, (myRank + 1) % 2, TAG, MPI_COMM_WORLD, &status);
-                std::cout << "Process " << myRank << " received value " << recvValue << std::endl;
-                messageReceived = true;
-                currentCount++;
-                messageSent = false;
-                messageReceived = false;
-                isMyTurn = true;
-            }
-        }
 
-        // Update ball position
-        if (isMovingRight) {
-            ballX += animationSpeed;
-            if (ballX >= 0.5f) {
-                isMovingRight = false;
-            }
-        } else {
-            ballX -= animationSpeed;
-            if (ballX <= -0.5f) {
-                isMovingRight = true;
-            }
-        }
-    }
-    
-    glutPostRedisplay();
-    glutTimerFunc(16, update, 0);
-}
-
-void init() {
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-}
 
 int main(int argc, char** argv) {
+    // Initialize MPI environment
     MPI_Init(&argc, &argv);
-    MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
-    MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
-    
-    if (worldSize != 2) {
-        if (myRank == 0) {
+
+    // Get process rank and size
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    // Check for exactly 2 processes
+    if (size != 2) {
+        if (rank == 0) {
             std::cout << "This program requires exactly 2 processes!" << std::endl;
         }
         MPI_Finalize();
         return 1;
     }
-    
-    glutInit(&argc, argv);
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB);
-    
-    glutInitWindowSize(400, 400);
-    glutInitWindowPosition(myRank * 420, 100);
-    std::string title = "Process " + std::to_string(myRank);
-    glutCreateWindow(title.c_str());
-    
-    init();
-    glutDisplayFunc(display);
-    glutTimerFunc(0, update, 0);
-    
-    // Set initial turn for Process 0
-    isMyTurn = (myRank == 0);
-    
-    glutMainLoop();
-    
+
+    // Initialize GLFW
+    if (!glfwInit()) {
+        std::cerr << "Failed to initialize GLFW" << std::endl;
+        return -1;
+    }
+
+    // Create window and OpenGL context
+    GLFWwindow* window;
+    if (rank == 0) {
+        window = glfwCreateWindow(WIDTH, HEIGHT, "MPI Process 0", NULL, NULL);
+    } else {
+        window = glfwCreateWindow(WIDTH, HEIGHT, "MPI Process 1", NULL, NULL);
+    }
+
+    if (!window) {
+        std::cerr << "Failed to create GLFW window" << std::endl;
+        glfwTerminate();
+        return -1;
+    }
+
+    glfwMakeContextCurrent(window);
+    // Add these OpenGL configurations
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    // Main loop variables
+    int count = 0;
+    int value = 0;
+    const int PING_PONG_LIMIT = 5;
+    const int TAG = 0;
+    bool running = true;
+    bool done = false;  // New flag to track completion
+
+    // Main rendering/communication loop
+    while (running && !done) {
+        glfwPollEvents();
+
+        // Only handle communication for the first 5 steps
+        if (count < PING_PONG_LIMIT) {
+            if (rank == count % 2) {
+                value = count;
+                MPI_Send(&value, 1, MPI_INT, (rank + 1) % 2, TAG, MPI_COMM_WORLD);
+            } else {
+                MPI_Status status;
+                MPI_Recv(&value, 1, MPI_INT, (rank + 1) % 2, TAG, MPI_COMM_WORLD, &status);
+            }
+            count++;
+        } else {
+            done = true;  // Communication complete
+        }
+
+        // Render regardless of communication state
+        glClear(GL_COLOR_BUFFER_BIT);
+        drawProcessInfo(rank, count < PING_PONG_LIMIT ? count : PING_PONG_LIMIT, value, (rank + 1) % 2);
+        glfwSwapBuffers(window);
+
+        // Check if window should close
+        if (glfwWindowShouldClose(window)) {
+            running = false;
+        }
+
+        // Add small delay to make window responsive
+        usleep(10000);  // 10ms delay
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    // Keep window open after communication finishes
+    while (running) {
+        glfwPollEvents();
+        glClear(GL_COLOR_BUFFER_BIT);
+        drawProcessInfo(rank, PING_PONG_LIMIT, value, (rank + 1) % 2);
+        glfwSwapBuffers(window);
+        
+        if (glfwWindowShouldClose(window)) {
+            running = false;
+        }
+        usleep(10000);
+    }
+
+    // Cleanup
+    glfwDestroyWindow(window);
+    glfwTerminate();
     MPI_Finalize();
     return 0;
 }
+
