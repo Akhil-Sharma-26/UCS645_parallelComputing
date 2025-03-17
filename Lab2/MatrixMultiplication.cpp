@@ -1,12 +1,11 @@
 #include <mpi.h>
 #include <iostream>
-#include <omp.h>
 #include <cstdlib>
 
-void fill_matrix(double* matrix, int rows, int cols) {
-    for (int i = 0; i < rows; ++i)
-        for (int j = 0; j < cols; ++j)
-            matrix[i*cols + j] = rand() % 100;
+void fill_matrix(double* matrix, int size) {
+    for (int i = 0; i < size; ++i)
+        for (int j = 0; j < size; ++j)
+            matrix[i*size + j] = rand() % 100;
 }
 
 void multiply(double* A, double* B, double* C, int rows, int size) {
@@ -24,38 +23,41 @@ int main(int argc, char** argv) {
 
     const int matrix_size = 70;
     const int rows_per_proc = matrix_size / num_procs;
-    double *A = nullptr, *B = nullptr, *C = nullptr;
+    double *A = nullptr, *C = nullptr;
+    
+    // Allocate B on ALL processes
+    double *B = new double[matrix_size * matrix_size];
     double *local_A = new double[rows_per_proc * matrix_size];
     double *local_C = new double[rows_per_proc * matrix_size]();
 
     if (rank == 0) {
         A = new double[matrix_size * matrix_size];
-        B = new double[matrix_size * matrix_size];
         C = new double[matrix_size * matrix_size]();
-        fill_matrix(A, matrix_size, matrix_size);
-        fill_matrix(B, matrix_size, matrix_size);
+        fill_matrix(A, matrix_size);
+        fill_matrix(B, matrix_size);  // Fill B only on root
     }
 
-    MPI_Scatter(A, rows_per_proc * matrix_size, MPI_DOUBLE, local_A,
-                rows_per_proc * matrix_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    // Root broadcasts B to all processes
     MPI_Bcast(B, matrix_size * matrix_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    MPI_Barrier(MPI_COMM_WORLD);
-    double start = omp_get_wtime();
-    multiply(local_A, B, local_C, rows_per_proc, matrix_size);
-    double end = omp_get_wtime();
-    double runtime = end - start;
+    // Scatter A from root to all processes
+    MPI_Scatter(A, rows_per_proc * matrix_size, MPI_DOUBLE, 
+               local_A, rows_per_proc * matrix_size, MPI_DOUBLE, 
+               0, MPI_COMM_WORLD);
 
+    // Local computation
+    multiply(local_A, B, local_C, rows_per_proc, matrix_size);
+
+    // Gather results to root
     MPI_Gather(local_C, rows_per_proc * matrix_size, MPI_DOUBLE,
                C, rows_per_proc * matrix_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
-        std::cout << "Parallel time: " << runtime << " seconds\n";
         delete[] A;
-        delete[] B;
         delete[] C;
     }
 
+    delete[] B;          // All processes delete B
     delete[] local_A;
     delete[] local_C;
     MPI_Finalize();
